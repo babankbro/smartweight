@@ -3,7 +3,7 @@
 import { useState, useRef, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, UploadCloud, Camera, Loader2, Save, Activity, Ruler, Banknote, ShieldCheck, TrendingUp, TrendingDown, CheckCircle2, X, AlertTriangle, Smartphone } from "lucide-react";
+import { ArrowLeft, UploadCloud, Camera, Loader2, Save, Activity, Ruler, Banknote, ShieldCheck, CheckCircle2, X, AlertTriangle, Smartphone } from "lucide-react";
 
 function ScanContent() {
   const router = useRouter();
@@ -17,6 +17,7 @@ function ScanContent() {
   const [base64Image, setBase64Image] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
   const [realGirth, setRealGirth] = useState("");
   const [animalName, setAnimalName] = useState(targetAnimalName || targetAnimalId || "");
   const [isSavingToFarm, setIsSavingToFarm] = useState(true);
@@ -74,6 +75,7 @@ function ScanContent() {
         setSelectedImage(dataUrl);
         stopCamera();
         setResult(null);
+        setAnalyzeError(null);
         setRealGirth("");
         
       }
@@ -115,9 +117,12 @@ function ScanContent() {
           attempt: nextAttempt,
           date: "วันนี้",
           time: new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) + " น.",
-          aiWeight: Number(result.weight),
-          aiGirth: Number(result.aiGirth),
-          aiHeight: Number(result.height),
+          // Stage 2 (pixels -> kilograms) does not exist yet, so there is no AI
+          // weight to record. Leaving these null is deliberate: a fabricated
+          // number here would end up in the training data as ground truth.
+          aiWeight: null,
+          aiGirth: null,
+          aiHeight: null,
           realGirth: realGirth ? Number(realGirth) : null,
           realHeight: null,
           scanImage: base64Image || null,
@@ -188,31 +193,46 @@ function ScanContent() {
       reader.readAsDataURL(file);
 
       setResult(null); // Reset previous result
+      setAnalyzeError(null);
       setRealGirth("");
       
     }
   };
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
+    if (!base64Image) return;
     setIsProcessing(true);
-    // Simulate AI processing delay
-    setTimeout(() => {
+    setAnalyzeError(null);
+    try {
+      const blob = await (await fetch(base64Image)).blob();
+      const fd = new FormData();
+      fd.append("file", blob, "scan.jpg");
+
+      const res = await fetch("/api/analyze", { method: "POST", body: fd });
+      const json = await res.json();
+
+      if (!res.ok) {
+        setAnalyzeError(json.error || "วิเคราะห์ภาพไม่สำเร็จ");
+        setResult(null);
+        return;
+      }
+
+      setResult({ ...json, animalType: selectedType });
+    } catch (err: any) {
+      setAnalyzeError(`เชื่อมต่อไม่สำเร็จ: ${err.message}`);
+      setResult(null);
+    } finally {
       setIsProcessing(false);
-      setResult({
-        animalType: selectedType, // Simulated AI classification based on user choice
-        weight: "425.1",
-        aiGirth: "150.0",
-        height: "145.5",
-        accuracy: "98.3",
-        price: "22,500"
-      });
-    }, 2500);
+    }
   };
 
-  // Mock calculation: (Girth^2) / 50 
-  const calculatedWeight = realGirth ? (Math.pow(Number(realGirth), 2) / 50).toFixed(1) : "-";
-  const weightDiff = realGirth && result ? (Number(calculatedWeight) - Number(result.weight)).toFixed(1) : "-";
-  const diffNumber = Number(weightDiff);
+  // Heart girth formula (Schaeffer): W(kg) = girth(cm)^2 x length(cm) / 10840.
+  // Without a measured body length we fall back to the girth-only rule of thumb
+  // that Thai extension officers use. This is the baseline the AI has to beat -
+  // it is NOT the AI's output.
+  const calculatedWeight = realGirth
+    ? (Math.pow(Number(realGirth), 2) / 50).toFixed(1)
+    : "-";
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 text-gray-800 flex flex-col relative overflow-hidden">
@@ -335,7 +355,7 @@ function ScanContent() {
               <span>ภาพสำหรับวิเคราะห์</span>
             </h2>
             {selectedImage && !isProcessing && (
-               <button onClick={() => { setSelectedImage(null); setResult(null); setRealGirth("");  }} className="text-red-500 text-sm font-semibold hover:underline">เปลี่ยนรูป</button>
+               <button onClick={() => { setSelectedImage(null); setResult(null); setAnalyzeError(null); setRealGirth("");  }} className="text-red-500 text-sm font-semibold hover:underline">เปลี่ยนรูป</button>
             )}
           </div>
 
@@ -428,14 +448,28 @@ function ScanContent() {
           </div>
         </div>
 
+        {/* Analysis failed - show the service's own reason, not a generic one */}
+        {analyzeError && !result && (
+          <div className="w-full max-w-sm mt-6 bg-red-50 border border-red-200 rounded-2xl p-4 flex gap-3 items-start animate-in fade-in slide-in-from-bottom-4">
+            <AlertTriangle size={20} className="text-red-500 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-bold text-red-700 mb-1">วิเคราะห์ภาพไม่สำเร็จ</p>
+              <p className="text-xs text-red-600 leading-relaxed">{analyzeError}</p>
+            </div>
+          </div>
+        )}
+
         {/* Result Area */}
         {result && (
           <div className="w-full max-w-sm mt-6 glass-panel rounded-3xl overflow-hidden animate-in fade-in slide-in-from-bottom-8 duration-700 shadow-xl border border-blue-300 relative">
              <div className="bg-gradient-to-r from-blue-500 to-teal-500 text-white p-4 pb-8 text-center font-bold flex flex-col items-center justify-center shadow-inner relative">
                <div className="flex items-center gap-2">
                  <ShieldCheck size={20} />
-                 ผลการประเมินเสร็จสมบูรณ์
+                 แยกส่วนตัวสัตว์สำเร็จ
                </div>
+               <p className="text-[11px] font-normal text-blue-50 mt-0.5">
+                 พบ {result.quality.zones_found}/7 โซน · ใช้เวลา {(result.inference_ms / 1000).toFixed(1)} วิ
+               </p>
              </div>
              
              {/* Badge Overlapping Header and Content */}
@@ -445,22 +479,94 @@ function ScanContent() {
              </div>
 
              <div className="p-6 pt-10 space-y-5">
-                {/* Main Stats */}
+                {/* Segmentation overlay - lets the user judge whether the AI
+                    actually outlined the right animal. */}
+                {result.overlay_png_base64 && (
+                  <img
+                    src={result.overlay_png_base64}
+                    alt="ผลการแยกส่วนตัวสัตว์"
+                    className="w-full rounded-2xl border border-gray-200 shadow-sm"
+                  />
+                )}
+
+                {/* Warnings from the model's own quality gate */}
+                {(result.quality.reasons.length > 0 || result.quality.notes.length > 0) && (
+                  <div className="space-y-2">
+                    {result.quality.reasons.map((r: string, i: number) => (
+                      <div key={`r${i}`} className="flex gap-2 items-start bg-amber-50 border border-amber-200 rounded-xl p-3">
+                        <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                        <p className="text-xs text-amber-900">{r}</p>
+                      </div>
+                    ))}
+                    {result.quality.notes.map((n: string, i: number) => (
+                      <p key={`n${i}`} className="text-[11px] text-gray-500 px-1">{n}</p>
+                    ))}
+                  </div>
+                )}
+
+                {/* Weight is not available yet - say so plainly instead of
+                    showing a placeholder number. */}
+                <div className="bg-gray-100 border border-gray-200 rounded-2xl p-4 text-center">
+                  <p className="text-[10px] text-gray-500 font-bold mb-1">น้ำหนัก (AI)</p>
+                  <p className="text-lg font-bold text-gray-400">ยังไม่พร้อมใช้งาน</p>
+                  <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
+                    {result.quality.weight_note}
+                  </p>
+                </div>
+
+                {/* Pixel measurements - honest about their unit */}
                 <div className="grid grid-cols-3 gap-3">
-                  <div className="bg-white p-3 rounded-2xl border border-gray-100 text-center shadow-sm relative overflow-hidden flex flex-col justify-center">
-                    <p className="text-[10px] text-gray-500 font-bold mb-1">น้ำหนัก (AI)</p>
-                    <p className="text-xl font-bold text-[#1e3a8a]">{result.weight}</p>
-                    <p className="text-[10px] text-gray-400">KG</p>
+                  <div className="bg-white p-3 rounded-2xl border border-gray-100 text-center shadow-sm flex flex-col justify-center">
+                    <p className="text-[10px] text-gray-500 font-bold mb-1">พื้นที่ลำตัว</p>
+                    <p className="text-lg font-bold text-[#1e3a8a]">
+                      {(result.total.area_px / 1000).toFixed(1)}k
+                    </p>
+                    <p className="text-[10px] text-gray-400">PX²</p>
                   </div>
-                  <div className="bg-blue-50 p-3 rounded-2xl border border-blue-100 text-center shadow-sm relative overflow-hidden flex flex-col justify-center">
-                    <p className="text-[10px] text-blue-700 font-bold mb-1">รอบอก (AI)</p>
-                    <p className="text-xl font-bold text-blue-700">{result.aiGirth}</p>
-                    <p className="text-[10px] text-blue-600/70">CM</p>
+                  <div className="bg-blue-50 p-3 rounded-2xl border border-blue-100 text-center shadow-sm flex flex-col justify-center">
+                    <p className="text-[10px] text-blue-700 font-bold mb-1">ความยาว</p>
+                    <p className="text-lg font-bold text-blue-700">{result.total.length_px}</p>
+                    <p className="text-[10px] text-blue-600/70">PX</p>
                   </div>
-                  <div className="bg-white p-3 rounded-2xl border border-gray-100 text-center shadow-sm relative overflow-hidden flex flex-col justify-center">
-                    <p className="text-[10px] text-gray-500 font-bold mb-1">ส่วนสูง (AI)</p>
-                    <p className="text-xl font-bold text-[#1e3a8a]">{result.height}</p>
-                    <p className="text-[10px] text-gray-400">CM</p>
+                  <div className="bg-white p-3 rounded-2xl border border-gray-100 text-center shadow-sm flex flex-col justify-center">
+                    <p className="text-[10px] text-gray-500 font-bold mb-1">ความลึกลำตัว</p>
+                    <p className="text-lg font-bold text-[#1e3a8a]">{result.total.height_px}</p>
+                    <p className="text-[10px] text-gray-400">PX</p>
+                  </div>
+                </div>
+
+                {/* Per-zone shares. These ratios do not depend on how far away
+                    the camera was, so they are the one number here that is
+                    already meaningful without a scale reference. */}
+                <div className="bg-white rounded-2xl border border-gray-100 p-4 shadow-sm">
+                  <p className="text-xs font-bold text-[#1e3a8a] mb-3">สัดส่วนพื้นที่รายโซน</p>
+                  <div className="space-y-2">
+                    {result.zones.map((z: any) => (
+                      <div key={z.id} className="flex items-center gap-2">
+                        <span
+                          className="w-3 h-3 rounded-sm shrink-0"
+                          style={{ backgroundColor: `rgb(${z.color.join(",")})`, opacity: z.found ? 1 : 0.25 }}
+                        />
+                        <span className={`text-[11px] flex-1 truncate ${z.found ? "text-gray-700" : "text-gray-300"}`}>
+                          {z.name_th}
+                        </span>
+                        {z.found ? (
+                          <>
+                            <div className="w-16 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                              <div
+                                className="h-full rounded-full"
+                                style={{ width: `${Math.min(z.share * 250, 100)}%`, backgroundColor: `rgb(${z.color.join(",")})` }}
+                              />
+                            </div>
+                            <span className="text-[11px] font-bold text-gray-600 w-10 text-right">
+                              {(z.share * 100).toFixed(1)}%
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-[11px] text-gray-300 w-10 text-right">ไม่พบ</span>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 </div>
 
@@ -484,13 +590,10 @@ function ScanContent() {
                           <span className="text-sm text-gray-600">น้ำหนักจากสูตรรอบอก:</span>
                           <span className="font-bold text-[#1e3a8a]">{calculatedWeight} kg</span>
                         </div>
-                        <div className="flex justify-between items-center">
-                          <span className="text-sm text-gray-600">ส่วนต่างความคลาดเคลื่อน:</span>
-                          <div className={`flex items-center gap-1 font-bold ${diffNumber > 0 ? 'text-red-500' : diffNumber < 0 ? 'text-blue-500' : 'text-green-500'}`}>
-                            {diffNumber > 0 ? <TrendingUp size={16} /> : diffNumber < 0 ? <TrendingDown size={16} /> : <CheckCircle2 size={16} />}
-                            <span>{diffNumber > 0 ? "+" : ""}{weightDiff} kg</span>
-                          </div>
-                        </div>
+                        <p className="text-[11px] text-gray-500 leading-relaxed">
+                          ค่านี้มาจากสูตรสายวัดรอบอก ไม่ใช่ผลจาก AI · เมื่อโมเดลขั้นที่ 2
+                          พร้อมใช้งาน ระบบจะแสดงส่วนต่างระหว่างสองวิธีให้เปรียบเทียบ
+                        </p>
                       </div>
                     )}
                   </div>

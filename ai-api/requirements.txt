@@ -1,10 +1,11 @@
-fastapi==0.104.1
-uvicorn==0.24.0.post1
-python-multipart==0.0.6
-rembg==2.0.50
-ultralytics==8.0.210
-onnxruntime==1.16.2
-opencv-python-headless==4.8.1.78
-pydantic==2.5.2
-numpy==1.26.2
-Pillow==10.1.0
+# torch / torchvision are installed separately from the CPU wheel index in the
+# Dockerfile - installing them from PyPI would pull ~4 GB of CUDA libraries.
+
+ultralytics==8.4.153          # must match the version the checkpoint was trained with
+opencv-contrib-python-headless>=4.10   # contrib: needed for cv2.aruco in stage 2
+numpy>=1.26,<3
+pillow>=10.1
+
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-multipart>=0.0.9
