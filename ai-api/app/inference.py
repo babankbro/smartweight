@@ -6,6 +6,7 @@ careful to report pixels only.
 """
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -16,7 +17,9 @@ from ultralytics import YOLO
 from . import geometry, overlay
 
 ROOT = Path(__file__).resolve().parent.parent
-MODEL_PATH = ROOT / "models" / "segment.pt"
+# Overridable so a new checkpoint can be rolled out (or rolled back) by changing
+# one environment variable instead of editing code.
+MODEL_PATH = ROOT / "models" / os.getenv("SEGMENT_MODEL", "segment_v2.pt")
 CLASS_MAP_PATH = ROOT / "class_map.json"
 
 IMGSZ = 640          # must match training; see checkpoint train_args
@@ -28,9 +31,28 @@ class Segmenter:
     def __init__(self) -> None:
         cfg = json.loads(CLASS_MAP_PATH.read_text(encoding="utf-8"))
         self.zone_meta: dict[str, dict] = cfg["zones"]
-        self.model_version: str = cfg["model_version"]
         self.model = YOLO(str(MODEL_PATH))
         self.names: dict[int, str] = self.model.names
+        # Derived from the checkpoint actually loaded, never from a hand-edited
+        # constant - a stale version string in stored measurements would make
+        # them impossible to interpret later.
+        self.model_version: str = self._version()
+
+        expected = set(self.zone_meta)
+        actual = set(self.names.values())
+        if expected != actual:
+            raise RuntimeError(
+                f"class_map.json describes {sorted(expected)} but "
+                f"{MODEL_PATH.name} has {sorted(actual)}"
+            )
+
+    def _version(self) -> str:
+        stamp = ""
+        try:
+            stamp = str(self.model.ckpt.get("date", ""))[:10]
+        except Exception:
+            pass
+        return f"{MODEL_PATH.stem}@{stamp}" if stamp else MODEL_PATH.stem
 
     def warmup(self) -> None:
         """First inference allocates buffers and is ~3x slower; pay that cost at

@@ -1,48 +1,79 @@
 {
-  "_comment": "Maps the model's raw class names ('1'..'7') to human-readable zone names. Edit name_th/name_en here only - no code change needed.",
-  "model_version": "yolo11l-seg@2026-09-16",
+  "_comment": "Maps the model's raw class names ('1'..'7') to human-readable zone names. Edit name_th/name_en here only - no code change needed. The zone taxonomy is shared by cattle and buffalo.",
+  "species": [
+    "cattle",
+    "buffalo"
+  ],
   "zones": {
     "1": {
       "key": "hip",
       "name_th": "โซนสะโพก",
       "name_en": "Hip Zone",
-      "color": [214, 39, 40]
+      "color": [
+        214,
+        39,
+        40
+      ]
     },
     "2": {
       "key": "loin",
       "name_th": "ส่วนหลัง / สันนอก",
       "name_en": "Loin / Spine",
-      "color": [255, 127, 14]
+      "color": [
+        255,
+        127,
+        14
+      ]
     },
     "3": {
       "key": "rear_shank",
       "name_th": "โคนขาหลัง / น่อง",
       "name_en": "Rear Thigh / Shank",
-      "color": [44, 160, 44]
+      "color": [
+        44,
+        160,
+        44
+      ]
     },
     "4": {
       "key": "shoulder",
       "name_th": "ไหล่",
       "name_en": "Shoulder",
-      "color": [31, 119, 180]
+      "color": [
+        31,
+        119,
+        180
+      ]
     },
     "5": {
       "key": "neck_fore_shank",
       "name_th": "สันคอ / น่องขาหน้า",
       "name_en": "Neck / Fore Shank",
-      "color": [148, 103, 189]
+      "color": [
+        148,
+        103,
+        189
+      ]
     },
     "6": {
       "key": "brisket",
       "name_th": "เนื้อใต้อก",
       "name_en": "Brisket",
-      "color": [227, 119, 194]
+      "color": [
+        227,
+        119,
+        194
+      ]
     },
     "7": {
       "key": "belly",
       "name_th": "ส่วนท้อง",
       "name_en": "Belly / Midsection",
-      "color": [188, 189, 34]
+      "color": [
+        188,
+        189,
+        34
+      ]
     }
   }
 }
