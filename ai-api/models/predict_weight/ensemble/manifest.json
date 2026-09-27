@@ -1,0 +1,160 @@
+{
+  "version": "feat-ensemble@2026-09-27",
+  "created": "2026-09-27T05:36:14+00:00",
+  "backbones": [
+    "convnext_t",
+    "effv2_s",
+    "dinov2_s",
+    "clip_b16"
+  ],
+  "backbone_files": [
+    "convnext_t_multitask_fold1.pth",
+    "effv2_s_multitask_fold1.pth",
+    "dinov2_s_multitask_fold1.pth",
+    "clip_b16_multitask_fold1.pth"
+  ],
+  "detector": "yolo11n.pt (COCO, largest box of any class)",
+  "input_size": 640,
+  "feat_img": 336,
+  "n_features": 3208,
+  "geom_cols": [
+    "bbox_w",
+    "bbox_h",
+    "bbox_area_ratio",
+    "bbox_aspect",
+    "bbox_w_rel",
+    "bbox_h_rel",
+    "img_w",
+    "img_h"
+  ],
+  "geom_stats": {
+    "bbox_w": [
+      527.7584290347256,
+      90.76913178342893
+    ],
+    "bbox_h": [
+      475.41575686486215,
+      67.24611861918147
+    ],
+    "bbox_area_ratio": [
+      0.6231277609377877,
+      0.16740504781774163
+    ],
+    "bbox_aspect": [
+      1.1124287440777088,
+      0.14547365755994168
+    ],
+    "bbox_w_rel": [
+      0.8246225453667589,
+      0.1418267684116077
+    ],
+    "bbox_h_rel": [
+      0.7428371201013471,
+      0.10507206034247106
+    ],
+    "img_w": [
+      640.0,
+      0.0
+    ],
+    "img_h": [
+      640.0,
+      0.0
+    ]
+  },
+  "heads": [
+    "svr",
+    "ridge",
+    "mlp"
+  ],
+  "combine": "mean",
+  "mlp_epochs": 400,
+  "folds": 5,
+  "n_images": 728,
+  "n_animals": 141,
+  "typical_error_kg": 73.6,
+  "typical_error_source": "best fine-tuned backbone, held-out animals (Colab val_mae)",
+  "metrics": {
+    "all": {
+      "svr": {
+        "n": 728,
+        "MAE": 34.79108307234047,
+        "RMSE": 52.41526121905325,
+        "MAPE": 11.201411388809374,
+        "R2": 0.7945947606274558,
+        "bias": 1.6918512213468344,
+        "within10": 69.64285714285714
+      },
+      "ridge": {
+        "n": 728,
+        "MAE": 32.37536618899767,
+        "RMSE": 45.36536137740453,
+        "MAPE": 10.163741190160819,
+        "R2": 0.8461332581180716,
+        "bias": 0.9339815338878702,
+        "within10": 69.78021978021978
+      },
+      "mlp": {
+        "n": 728,
+        "MAE": 31.9195125768846,
+        "RMSE": 45.84902092169128,
+        "MAPE": 10.095318372312436,
+        "R2": 0.8428348902430276,
+        "bias": 1.9755397181056764,
+        "within10": 71.56593406593407
+      },
+      "ensemble": {
+        "n": 728,
+        "MAE": 31.623543005300505,
+        "RMSE": 45.38095913643784,
+        "MAPE": 10.085657197403878,
+        "R2": 0.8460274333708843,
+        "bias": 1.5337908244467924,
+        "within10": 72.66483516483517
+      }
+    },
+    "ensemble_by_label": {
+      "formula_labels": {
+        "n": 551,
+        "MAE": 30.825833265434635,
+        "RMSE": 43.85242090491134,
+        "MAPE": 9.098658017740599,
+        "R2": 0.8542948952990576,
+        "bias": -2.5042283248035835,
+        "within10": 75.68058076225044
+      },
+      "weighed_labels": {
+        "n": 177,
+        "MAE": 34.10680891866826,
+        "RMSE": 49.840078248587595,
+        "MAPE": 13.158180067429115,
+        "R2": 0.6547291087541289,
+        "bias": 14.104121622395702,
+        "within10": 63.2768361581921
+      }
+    }
+  },
+  "caveats": [
+    "Backbones were fine-tuned on ~7/8 of the training animals, so these CV metrics are optimistic. The Colab 8-fold split could not be rebuilt (convnext_t 51.8 vs stored 73.6), so no leakage-free subset is known; the fine-tuned backbones alone scored 73.6-101.6 kg MAE on held-out animals.",
+    "106 of 141 animals have weight == 5.854*L - 595.98 exactly: labels are mostly a tape formula, not scale weights.",
+    "Trained on cattle only (no buffalo)."
+  ],
+  "aux_typical_error": {
+    "Height_y": {
+      "MAE": 8.91,
+      "R2": 0.357
+    },
+    "L_y": {
+      "MAE": 12.75,
+      "R2": 0.334
+    },
+    "age_years": {
+      "MAE": 1.28,
+      "R2": 0.096
+    },
+    "ratio_lh": {
+      "MAE": 0.08,
+      "R2": 0.018
+    }
+  },
+  "aux_typical_error_source": "V3 notebook cell 14 (B0 multi-task, GroupKFold by animal)"
+}

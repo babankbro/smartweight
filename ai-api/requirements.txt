@@ -9,3 +9,7 @@ pillow>=10.1
 fastapi>=0.115
 uvicorn[standard]>=0.32
 python-multipart>=0.0.9
+
+# stage 2 - weight ensemble (app/weight.py)
+timm>=1.0,<2                  # builds the fine-tuned backbones
+scikit-learn>=1.5,<2          # SVR / Ridge heads; joblib comes with it

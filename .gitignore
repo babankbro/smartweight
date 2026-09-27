@@ -42,3 +42,12 @@ Thumbs.db
 # Debug logs
 npm-debug.log*
 yarn-debug.log*
+
+# ml scratch outputs
+ml/geometry.csv
+ml/oof_predictions.csv
+ml/__pycache__/
+*.joblib
+ai-api/models/**/*.zip
+ai-api/models/predict_weight/ensemble/oof_predictions.csv
+ml/demo/

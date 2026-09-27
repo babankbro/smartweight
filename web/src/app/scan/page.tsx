@@ -5,6 +5,199 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, UploadCloud, Camera, Loader2, Save, Activity, Ruler, Banknote, ShieldCheck, CheckCircle2, X, AlertTriangle, Smartphone } from "lucide-react";
 
+type AuxValue = { value: number; unit: string; typical_error: number | null; r2: number | null };
+
+// Display order and wording for the MLP's non-weight outputs.
+const AUX_FIELDS: {
+  key: "height_cm" | "length_cm" | "age_years" | "ratio_lh";
+  label: string;
+  unit: string;
+  fmt: (v: number) => string;
+}[] = [
+  { key: "height_cm", label: "ความสูง", unit: "ซม.", fmt: (v) => v.toFixed(0) },
+  { key: "length_cm", label: "ความยาวลำตัว (L)", unit: "ซม.", fmt: (v) => v.toFixed(0) },
+  { key: "age_years", label: "อายุ", unit: "ปี", fmt: (v) => v.toFixed(1) },
+  { key: "ratio_lh", label: "สัดส่วน L / ความสูง", unit: "", fmt: (v) => v.toFixed(2) },
+];
+
+// R² from leakage-free validation: how much of the real variation the model
+// explains. Below 0.3 the estimate is barely better than guessing the average.
+const reliability = (r2: number | null) =>
+  r2 == null
+    ? { label: "ไม่ทราบ", cls: "bg-gray-100 text-gray-500" }
+    : r2 >= 0.3
+      ? { label: "พอใช้", cls: "bg-amber-100 text-amber-700" }
+      : { label: "ต่ำ", cls: "bg-red-100 text-red-600" };
+
+// Response shape of ai-api stage 2 (ai-api/app/weight.py -> WeightPredictor.predict)
+type WeightResult = {
+  kg: number;
+  spread_kg: number;
+  per_model: { svr: number; ridge: number; mlp: number };
+  typical_error_kg: number | null;
+  // Other outputs of the multi-task MLP (single model, not the 3-model ensemble)
+  measurements?: Partial<Record<"height_cm" | "length_cm" | "age_years" | "ratio_lh", AuxValue>>;
+  detector_found: boolean;
+  model_version: string;
+  inference_ms: number;
+};
+
+const HEADS: { key: keyof WeightResult["per_model"]; label: string; color: string }[] = [
+  { key: "svr", label: "SVR", color: "#2563eb" },
+  { key: "ridge", label: "Ridge", color: "#9333ea" },
+  { key: "mlp", label: "Multi-task MLP", color: "#ea580c" },
+];
+
+function WeightPanel({ weight, zonesFound, note }: { weight: WeightResult; zonesFound: number; note: string }) {
+  const err = weight.typical_error_kg ?? 0;
+  const lo = weight.kg - err;
+  const hi = weight.kg + err;
+  // Shared axis for the range bar: wide enough for the band and every head.
+  const values = Object.values(weight.per_model);
+  const axisLo = Math.min(lo, ...values) - 10;
+  const axisHi = Math.max(hi, ...values) + 10;
+  const pos = (v: number) => `${((v - axisLo) / (axisHi - axisLo)) * 100}%`;
+  const agree = weight.spread_kg < 15;
+
+  const steps = [
+    { label: "แยกส่วน 7 โซน", ok: zonesFound >= 5, detail: `${zonesFound}/7` },
+    { label: "ตรวจจับตัวสัตว์", ok: weight.detector_found, detail: weight.detector_found ? "YOLO11n" : "ใช้ทั้งภาพ" },
+    { label: "สกัดฟีเจอร์", ok: true, detail: "4 backbones" },
+    { label: "รวมผล 3 โมเดล", ok: agree, detail: `±${weight.spread_kg.toFixed(0)} กก.` },
+  ];
+
+  return (
+    <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 space-y-4">
+      {/* Headline estimate */}
+      <div className="text-center">
+        <p className="text-[10px] text-emerald-700 font-bold mb-1">
+          น้ำหนักประมาณ (AI)
+          <span className="ml-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">ทดลอง</span>
+        </p>
+        <p className="text-4xl font-black text-emerald-700 leading-none">
+          {weight.kg.toFixed(0)} <span className="text-base font-bold">กก.</span>
+        </p>
+        {weight.typical_error_kg != null && (
+          <p className="text-xs text-emerald-800 mt-1">
+            ช่วงที่น่าจะเป็น {lo.toFixed(0)}–{hi.toFixed(0)} กก. (คลาดเคลื่อนเฉลี่ย ±{err.toFixed(0)})
+          </p>
+        )}
+      </div>
+
+      {/* Pipeline steps */}
+      <div className="grid grid-cols-4 gap-1.5">
+        {steps.map((s, i) => (
+          <div
+            key={s.label}
+            className={`rounded-xl px-1.5 py-2 text-center border ${
+              s.ok ? "bg-white border-emerald-200" : "bg-amber-50 border-amber-200"
+            }`}
+          >
+            <div className={`mx-auto mb-1 w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center text-white ${
+              s.ok ? "bg-emerald-500" : "bg-amber-500"
+            }`}>
+              {i + 1}
+            </div>
+            <p className="text-[9px] font-bold text-gray-700 leading-tight">{s.label}</p>
+            <p className="text-[9px] text-gray-500 mt-0.5">{s.detail}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Each head on a shared axis, over the likely range */}
+      <div className="bg-white rounded-xl border border-emerald-100 p-3">
+        <p className="text-[10px] font-bold text-gray-600 mb-3">ผลจากแต่ละโมเดล (ค่าที่แสดงคือค่าเฉลี่ย)</p>
+        <div className="relative h-6 mx-2">
+          <div className="absolute top-1/2 -translate-y-1/2 inset-x-0 h-1 rounded bg-gray-200" />
+          {err > 0 && (
+            <div
+              className="absolute top-1/2 -translate-y-1/2 h-3 rounded bg-emerald-200"
+              style={{ left: pos(lo), width: `calc(${pos(hi)} - ${pos(lo)})` }}
+            />
+          )}
+          {HEADS.map((h) => (
+            <div
+              key={h.key}
+              title={`${h.label}: ${weight.per_model[h.key].toFixed(1)} กก.`}
+              className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white shadow"
+              style={{ left: pos(weight.per_model[h.key]), backgroundColor: h.color }}
+            />
+          ))}
+          <div
+            className="absolute top-0 bottom-0 -translate-x-1/2 w-0.5 bg-emerald-700"
+            style={{ left: pos(weight.kg) }}
+          />
+        </div>
+        <div className="mt-3 space-y-1">
+          {HEADS.map((h) => (
+            <div key={h.key} className="flex items-center justify-between text-[11px]">
+              <span className="flex items-center gap-1.5 text-gray-600">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: h.color }} />
+                {h.label}
+              </span>
+              <span className="font-bold text-gray-800 tabular-nums">{weight.per_model[h.key].toFixed(1)} กก.</span>
+            </div>
+          ))}
+          <div className="flex items-center justify-between text-[11px] pt-1 border-t border-gray-100">
+            <span className="flex items-center gap-1.5 text-emerald-700 font-bold">
+              <span className="w-2.5 h-0.5 bg-emerald-700" /> เฉลี่ย (ensemble)
+            </span>
+            <span className="font-black text-emerald-700 tabular-nums">{weight.kg.toFixed(1)} กก.</span>
+          </div>
+        </div>
+      </div>
+
+      {!agree && (
+        <div className="flex gap-2 items-start bg-amber-50 border border-amber-200 rounded-xl p-3">
+          <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-900">โมเดลทั้ง 3 ให้ค่าต่างกันมาก ผลนี้ไม่น่าเชื่อถือ ลองถ่ายด้านข้างให้เห็นเต็มตัวอีกครั้ง</p>
+        </div>
+      )}
+
+      {/* Other multi-task regression outputs */}
+      {weight.measurements && Object.keys(weight.measurements).length > 0 && (
+        <div className="bg-white rounded-xl border border-emerald-100 p-3">
+          <p className="text-[10px] font-bold text-gray-600">ค่าประมาณอื่นจาก Multi-task regression</p>
+          <p className="text-[9px] text-gray-400 mb-2">ทำนายพร้อมน้ำหนักจากโมเดล MLP ตัวเดียว · ± คือค่าคลาดเคลื่อนเฉลี่ย</p>
+          <div className="grid grid-cols-2 gap-2">
+            {AUX_FIELDS.map((f) => {
+              const m = weight.measurements?.[f.key];
+              if (!m) return null;
+              const rel = reliability(m.r2);
+              return (
+                <div key={f.key} className="rounded-lg bg-gray-50 border border-gray-100 p-2">
+                  <div className="flex items-center justify-between gap-1">
+                    <p className="text-[10px] text-gray-500 font-bold leading-tight">{f.label}</p>
+                    <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${rel.cls}`}>{rel.label}</span>
+                  </div>
+                  <p className="text-lg font-black text-gray-800 leading-tight mt-0.5 tabular-nums">
+                    {f.fmt(m.value)} <span className="text-[10px] font-bold text-gray-500">{f.unit}</span>
+                  </p>
+                  {m.typical_error != null && (
+                    <p className="text-[9px] text-gray-400 tabular-nums">
+                      ±{f.fmt(m.typical_error)} {f.unit}
+                      {m.r2 != null && <> · R² {m.r2.toFixed(2)}</>}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[9px] text-gray-400 mt-2 leading-relaxed">
+            ความน่าเชื่อถือ: &quot;พอใช้&quot; = อธิบายความแตกต่างจริงได้ราว 1 ใน 3 ·
+            &quot;ต่ำ&quot; = แทบไม่ดีกว่าการเดาค่าเฉลี่ย ไม่ควรนำไปใช้ตัดสินใจ
+          </p>
+        </div>
+      )}
+
+      <p className="text-[10px] text-gray-500 leading-relaxed text-center">{note}</p>
+      <p className="text-[9px] text-gray-400 text-center">
+        {weight.model_version} · {(weight.inference_ms / 1000).toFixed(1)} วิ
+      </p>
+    </div>
+  );
+}
+
 function ScanContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -117,12 +310,11 @@ function ScanContent() {
           attempt: nextAttempt,
           date: "วันนี้",
           time: new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) + " น.",
-          // Stage 2 (pixels -> kilograms) does not exist yet, so there is no AI
-          // weight to record. Leaving these null is deliberate: a fabricated
-          // number here would end up in the training data as ground truth.
-          aiWeight: null,
+          // Experimental image-only estimate from ai-api stage 2. Buffalo stay
+          // null: the weight model was trained on cattle only.
+          aiWeight: aiWeightKg,
           aiGirth: null,
-          aiHeight: null,
+          aiHeight: aiWeightKg !== null ? (result.weight.measurements?.height_cm?.value ?? null) : null,
           realGirth: realGirth ? Number(realGirth) : null,
           realHeight: null,
           scanImage: base64Image || null,
@@ -225,6 +417,9 @@ function ScanContent() {
       setIsProcessing(false);
     }
   };
+
+  const aiWeightKg: number | null =
+    result?.weight && result.animalType !== "กระบือ" ? result.weight.kg : null;
 
   // Heart girth formula (Schaeffer): W(kg) = girth(cm)^2 x length(cm) / 10840.
   // Without a measured body length we fall back to the girth-only rule of thumb
@@ -504,15 +699,21 @@ function ScanContent() {
                   </div>
                 )}
 
-                {/* Weight is not available yet - say so plainly instead of
-                    showing a placeholder number. */}
-                <div className="bg-gray-100 border border-gray-200 rounded-2xl p-4 text-center">
-                  <p className="text-[10px] text-gray-500 font-bold mb-1">น้ำหนัก (AI)</p>
-                  <p className="text-lg font-bold text-gray-400">ยังไม่พร้อมใช้งาน</p>
-                  <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
-                    {result.quality.weight_note}
-                  </p>
-                </div>
+                {/* Experimental weight - shown with its typical error so it
+                    is not mistaken for a scale reading. */}
+                {aiWeightKg !== null ? (
+                  <WeightPanel weight={result.weight} zonesFound={result.quality.zones_found} note={result.quality.weight_note} />
+                ) : (
+                  <div className="bg-gray-100 border border-gray-200 rounded-2xl p-4 text-center">
+                    <p className="text-[10px] text-gray-500 font-bold mb-1">น้ำหนัก (AI)</p>
+                    <p className="text-lg font-bold text-gray-400">ยังไม่พร้อมใช้งาน</p>
+                    <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
+                      {result.weight && result.animalType === "กระบือ"
+                        ? "โมเดลน้ำหนักเทรนจากโคเท่านั้น ยังไม่รองรับกระบือ"
+                        : result.quality.weight_note}
+                    </p>
+                  </div>
+                )}
 
                 {/* Pixel measurements - honest about their unit */}
                 <div className="grid grid-cols-3 gap-3">
