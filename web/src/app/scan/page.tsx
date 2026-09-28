@@ -33,8 +33,14 @@ const reliability = (r2: number | null) =>
 type WeightResult = {
   kg: number;
   spread_kg: number;
-  per_model: { svr: number; ridge: number; mlp: number };
+  per_model: { svr: number; ridge: number; mlp: number; direct?: number };
+  // Share of each head in `kg` (manifest weights; NNLS may zero some out).
+  // Missing on the cattle-only model, which took a plain mean.
+  head_weights?: Partial<Record<"svr" | "ridge" | "mlp" | "direct", number>>;
   typical_error_kg: number | null;
+  typical_error_by_species?: Partial<Record<"cow" | "buffalo", number>> | null;
+  // Species the loaded model was trained on (cow+buffalo model: ["cow", "buffalo"])
+  species?: string[];
   // Other outputs of the multi-task MLP (single model, not the 3-model ensemble)
   measurements?: Partial<Record<"height_cm" | "length_cm" | "age_years" | "ratio_lh", AuxValue>>;
   detector_found: boolean;
@@ -46,14 +52,21 @@ const HEADS: { key: keyof WeightResult["per_model"]; label: string; color: strin
   { key: "svr", label: "SVR", color: "#2563eb" },
   { key: "ridge", label: "Ridge", color: "#9333ea" },
   { key: "mlp", label: "Multi-task MLP", color: "#ea580c" },
+  { key: "direct", label: "Backbone (direct)", color: "#0d9488" },
 ];
 
-function WeightPanel({ weight, zonesFound, note }: { weight: WeightResult; zonesFound: number; note: string }) {
-  const err = weight.typical_error_kg ?? 0;
+// Thai animal type in the UI -> species key used by the weight model
+const speciesOf = (animalType: string) => (animalType === "กระบือ" ? "buffalo" : "cow");
+
+function WeightPanel({ weight, zonesFound, note, species }: { weight: WeightResult; zonesFound: number; note: string; species: string }) {
+  // Prefer the model's held-out error for this species (buffalo is worse than cow)
+  const err = weight.typical_error_by_species?.[species as "cow" | "buffalo"] ?? weight.typical_error_kg ?? 0;
+  const heads = HEADS.filter((h) => weight.per_model[h.key] != null);
+  const share = (k: string) => weight.head_weights?.[k as keyof NonNullable<WeightResult["head_weights"]>];
   const lo = weight.kg - err;
   const hi = weight.kg + err;
   // Shared axis for the range bar: wide enough for the band and every head.
-  const values = Object.values(weight.per_model);
+  const values = Object.values(weight.per_model) as number[];
   const axisLo = Math.min(lo, ...values) - 10;
   const axisHi = Math.max(hi, ...values) + 10;
   const pos = (v: number) => `${((v - axisLo) / (axisHi - axisLo)) * 100}%`;
@@ -63,7 +76,7 @@ function WeightPanel({ weight, zonesFound, note }: { weight: WeightResult; zones
     { label: "แยกส่วน 7 โซน", ok: zonesFound >= 5, detail: `${zonesFound}/7` },
     { label: "ตรวจจับตัวสัตว์", ok: weight.detector_found, detail: weight.detector_found ? "YOLO11n" : "ใช้ทั้งภาพ" },
     { label: "สกัดฟีเจอร์", ok: true, detail: "4 backbones" },
-    { label: "รวมผล 3 โมเดล", ok: agree, detail: `±${weight.spread_kg.toFixed(0)} กก.` },
+    { label: `รวมผล ${heads.length} โมเดล`, ok: agree, detail: `±${weight.spread_kg.toFixed(0)} กก.` },
   ];
 
   return (
@@ -106,7 +119,7 @@ function WeightPanel({ weight, zonesFound, note }: { weight: WeightResult; zones
 
       {/* Each head on a shared axis, over the likely range */}
       <div className="bg-white rounded-xl border border-emerald-100 p-3">
-        <p className="text-[10px] font-bold text-gray-600 mb-3">ผลจากแต่ละโมเดล (ค่าที่แสดงคือค่าเฉลี่ย)</p>
+        <p className="text-[10px] font-bold text-gray-600 mb-3">ผลจากแต่ละโมเดล (% = สัดส่วนในค่าที่แสดง)</p>
         <div className="relative h-6 mx-2">
           <div className="absolute top-1/2 -translate-y-1/2 inset-x-0 h-1 rounded bg-gray-200" />
           {err > 0 && (
@@ -115,12 +128,12 @@ function WeightPanel({ weight, zonesFound, note }: { weight: WeightResult; zones
               style={{ left: pos(lo), width: `calc(${pos(hi)} - ${pos(lo)})` }}
             />
           )}
-          {HEADS.map((h) => (
+          {heads.map((h) => (
             <div
               key={h.key}
-              title={`${h.label}: ${weight.per_model[h.key].toFixed(1)} กก.`}
+              title={`${h.label}: ${weight.per_model[h.key]!.toFixed(1)} กก.`}
               className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white shadow"
-              style={{ left: pos(weight.per_model[h.key]), backgroundColor: h.color }}
+              style={{ left: pos(weight.per_model[h.key]!), backgroundColor: h.color }}
             />
           ))}
           <div
@@ -129,18 +142,21 @@ function WeightPanel({ weight, zonesFound, note }: { weight: WeightResult; zones
           />
         </div>
         <div className="mt-3 space-y-1">
-          {HEADS.map((h) => (
+          {heads.map((h) => (
             <div key={h.key} className="flex items-center justify-between text-[11px]">
               <span className="flex items-center gap-1.5 text-gray-600">
                 <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: h.color }} />
                 {h.label}
+                {share(h.key) != null && (
+                  <span className="text-[9px] text-gray-400 tabular-nums">{Math.round(share(h.key)! * 100)}%</span>
+                )}
               </span>
-              <span className="font-bold text-gray-800 tabular-nums">{weight.per_model[h.key].toFixed(1)} กก.</span>
+              <span className="font-bold text-gray-800 tabular-nums">{weight.per_model[h.key]!.toFixed(1)} กก.</span>
             </div>
           ))}
           <div className="flex items-center justify-between text-[11px] pt-1 border-t border-gray-100">
             <span className="flex items-center gap-1.5 text-emerald-700 font-bold">
-              <span className="w-2.5 h-0.5 bg-emerald-700" /> เฉลี่ย (ensemble)
+              <span className="w-2.5 h-0.5 bg-emerald-700" /> {weight.head_weights ? "ผลรวมถ่วงน้ำหนัก (ensemble)" : "เฉลี่ย (ensemble)"}
             </span>
             <span className="font-black text-emerald-700 tabular-nums">{weight.kg.toFixed(1)} กก.</span>
           </div>
@@ -150,7 +166,7 @@ function WeightPanel({ weight, zonesFound, note }: { weight: WeightResult; zones
       {!agree && (
         <div className="flex gap-2 items-start bg-amber-50 border border-amber-200 rounded-xl p-3">
           <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
-          <p className="text-xs text-amber-900">โมเดลทั้ง 3 ให้ค่าต่างกันมาก ผลนี้ไม่น่าเชื่อถือ ลองถ่ายด้านข้างให้เห็นเต็มตัวอีกครั้ง</p>
+          <p className="text-xs text-amber-900">โมเดลทั้ง {heads.length} ให้ค่าต่างกันมาก ผลนี้ไม่น่าเชื่อถือ ลองถ่ายด้านข้างให้เห็นเต็มตัวอีกครั้ง</p>
         </div>
       )}
 
@@ -310,8 +326,8 @@ function ScanContent() {
           attempt: nextAttempt,
           date: "วันนี้",
           time: new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) + " น.",
-          // Experimental image-only estimate from ai-api stage 2. Buffalo stay
-          // null: the weight model was trained on cattle only.
+          // Experimental image-only estimate from ai-api stage 2. Null for a
+          // species the loaded weight model was not trained on.
           aiWeight: aiWeightKg,
           aiGirth: null,
           aiHeight: aiWeightKg !== null ? (result.weight.measurements?.height_cm?.value ?? null) : null,
@@ -418,8 +434,11 @@ function ScanContent() {
     }
   };
 
+  // Older (cattle-only) models report no species list.
+  const weightSupportsType = (w: WeightResult, animalType: string) =>
+    (w.species ?? ["cow"]).includes(speciesOf(animalType));
   const aiWeightKg: number | null =
-    result?.weight && result.animalType !== "กระบือ" ? result.weight.kg : null;
+    result?.weight && weightSupportsType(result.weight, result.animalType) ? result.weight.kg : null;
 
   // Heart girth formula (Schaeffer): W(kg) = girth(cm)^2 x length(cm) / 10840.
   // Without a measured body length we fall back to the girth-only rule of thumb
@@ -702,14 +721,14 @@ function ScanContent() {
                 {/* Experimental weight - shown with its typical error so it
                     is not mistaken for a scale reading. */}
                 {aiWeightKg !== null ? (
-                  <WeightPanel weight={result.weight} zonesFound={result.quality.zones_found} note={result.quality.weight_note} />
+                  <WeightPanel weight={result.weight} zonesFound={result.quality.zones_found} note={result.quality.weight_note} species={speciesOf(result.animalType)} />
                 ) : (
                   <div className="bg-gray-100 border border-gray-200 rounded-2xl p-4 text-center">
                     <p className="text-[10px] text-gray-500 font-bold mb-1">น้ำหนัก (AI)</p>
                     <p className="text-lg font-bold text-gray-400">ยังไม่พร้อมใช้งาน</p>
                     <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
-                      {result.weight && result.animalType === "กระบือ"
-                        ? "โมเดลน้ำหนักเทรนจากโคเท่านั้น ยังไม่รองรับกระบือ"
+                      {result.weight && !weightSupportsType(result.weight, result.animalType)
+                        ? `โมเดลน้ำหนักนี้ยังไม่รองรับ${result.animalType}`
                         : result.quality.weight_note}
                     </p>
                   </div>

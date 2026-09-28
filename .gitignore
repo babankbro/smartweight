@@ -51,3 +51,4 @@ ml/__pycache__/
 ai-api/models/**/*.zip
 ai-api/models/predict_weight/ensemble/oof_predictions.csv
 ml/demo/
+ai-api/models/predict_weight_v2/**/oof_predictions.csv

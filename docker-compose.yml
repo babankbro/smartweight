@@ -25,6 +25,9 @@ services:
     environment:
       # roll a new checkpoint out - or back - without touching the image
       - SEGMENT_MODEL=segment_v2.pt
+      # cow+buffalo weight model; cattle-only fallback: predict_weight / ensemble
+      - WEIGHT_DIR=predict_weight_v2
+      - WEIGHT_ENSEMBLE=ensemble_cowbuff
     volumes:
       - ./ai-api/models:/app/models:ro
     healthcheck:

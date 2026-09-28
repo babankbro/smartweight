@@ -5,7 +5,8 @@ Pipeline (mirrors `ml/Predition_Weight_V3 (1).ipynb`, cells 35-39):
     photo --stretch--> 640x640 RGB          (the Roboflow export was stretched to 640x640)
       |-- YOLO11n (COCO) -> largest box -> 8 geometry features
       |-- 4 fine-tuned backbones, flip-averaged -> 768 + 1280 + 384 + 768 features
-      '-- concat (3208) -> SVR | Ridge | multi-task MLP -> mean = weight
+      '-- concat (3208) -> SVR | Ridge | multi-task MLP (| backbones' own
+          weight head, "direct") -> manifest-weighted sum = weight
 
 Training (`ml/03_train_weight_ensemble.py`) imports this module, so the
 preprocessing used to fit the heads and the one used to serve them are the same
@@ -26,9 +27,18 @@ from PIL import Image
 from torchvision import transforms
 
 ROOT = Path(__file__).resolve().parent.parent
-WEIGHT_DIR = ROOT / "models" / "predict_weight"
+# A model set is a folder of backbone .pth files plus an ensemble sub-folder
+# (manifest + heads). Switch sets with env vars, no rebuild:
+#   cattle only (2026-09-27): WEIGHT_DIR=predict_weight     WEIGHT_ENSEMBLE=ensemble
+#   cow+buffalo (2026-09-28): WEIGHT_DIR=predict_weight_v2  WEIGHT_ENSEMBLE=ensemble_cowbuff
+WEIGHT_DIR = ROOT / "models" / os.getenv("WEIGHT_DIR", "predict_weight")
 ENSEMBLE_DIR = WEIGHT_DIR / os.getenv("WEIGHT_ENSEMBLE", "ensemble")
-DETECTOR_PATH = WEIGHT_DIR / "yolo11n.pt"
+# Stock COCO yolo11n - shared by every set, so it is looked up in the set
+# first and then in the original folder.
+DETECTOR_PATH = next(
+    (p for p in (WEIGHT_DIR / "yolo11n.pt", ROOT / "models" / "predict_weight" / "yolo11n.pt") if p.exists()),
+    WEIGHT_DIR / "yolo11n.pt",
+)
 
 INPUT_SIZE = 640     # every training image is a 640x640 stretch; serve the same
 FEAT_IMG = 336       # IMG_SIZE the backbones were fine-tuned at (notebook cell 25)
@@ -120,10 +130,11 @@ class FrozenMultitaskMLP(nn.Module):
         return self.net(x)
 
 
-def load_finetuned(key: str, device="cpu") -> tuple[WeightNet, dict]:
-    ckpt = torch.load(WEIGHT_DIR / f"{key}_multitask_fold1.pth",
-                      map_location=device, weights_only=True)
-    net = WeightNet(ckpt["backbone"])
+def load_finetuned(key_or_file: str, device="cpu") -> tuple[WeightNet, dict]:
+    name = key_or_file if key_or_file.endswith(".pth") else f"{key_or_file}_multitask_fold1.pth"
+    ckpt = torch.load(WEIGHT_DIR / name, map_location=device, weights_only=True)
+    # cow+buffalo checkpoints carry their own breed count
+    net = WeightNet(ckpt["backbone"], n_breeds=ckpt.get("n_breeds", N_BREEDS))
     net.load_state_dict(ckpt["state_dict"])
     return net.eval().to(device), ckpt
 
@@ -131,12 +142,14 @@ def load_finetuned(key: str, device="cpu") -> tuple[WeightNet, dict]:
 class FeatureExtractor:
     """Photo -> (geometry dict, 3208-d feature vector before geometry scaling)."""
 
-    def __init__(self, device="cpu"):
+    def __init__(self, device="cpu", files: list[str] | None = None):
         from ultralytics import YOLO
 
         self.device = device
         self.detector = YOLO(str(DETECTOR_PATH))
-        self.nets = {k: load_finetuned(k, device)[0] for k in BACKBONE_KEYS}
+        loaded = [load_finetuned(f, device) for f in (files or BACKBONE_KEYS)]
+        self.nets = dict(zip(BACKBONE_KEYS, (net for net, _ in loaded)))
+        self.wnorm = [ck["norm"]["weight"] for _, ck in loaded]   # (mu, sd) of each net's weight head
 
     def geometry(self, im640: Image.Image) -> dict:
         """Largest box of ANY class, as the notebook did (it never filtered to
@@ -158,12 +171,21 @@ class FeatureExtractor:
                     bbox_w_rel=bw / W, bbox_h_rel=bh / H, img_w=float(W), img_h=float(H))
 
     @torch.no_grad()
-    def backbone_features(self, ims640: list[Image.Image]) -> np.ndarray:
+    def backbone_features(self, ims640: list[Image.Image], geom: np.ndarray | None = None):
+        """Flip-averaged features. Given scaled `geom`, also returns the nets' own
+        weight prediction (kg, mean over nets) - the ensemble's `direct` head."""
         x = torch.stack([FEAT_TF(im) for im in ims640]).to(self.device)
         xf = torch.flip(x, dims=[3])
-        parts = [((net.backbone(x) + net.backbone(xf)) / 2).float().cpu().numpy()
-                 for net in self.nets.values()]
-        return np.concatenate(parts, axis=1)
+        parts, direct = [], []
+        for net, (mu, sd) in zip(self.nets.values(), self.wnorm):
+            fa, fb = net.backbone(x), net.backbone(xf)
+            parts.append(((fa + fb) / 2).float().cpu().numpy())
+            if geom is not None:
+                t = net.tab(torch.tensor(geom, dtype=torch.float32, device=self.device))
+                p = sum(net.reg(net.trunk(torch.cat([f, t], 1)))[:, 0] for f in (fa, fb)) / 2
+                direct.append(p.float().cpu().numpy() * sd + mu)
+        feats = np.concatenate(parts, axis=1)
+        return feats if geom is None else (feats, np.mean(direct, axis=0))
 
 
 def scale_geometry(geom_rows: np.ndarray, stats: dict) -> np.ndarray:
@@ -183,7 +205,9 @@ class WeightPredictor:
         self.man = json.loads((ENSEMBLE_DIR / "manifest.json").read_text(encoding="utf-8"))
         if self.man["backbones"] != BACKBONE_KEYS or self.man["geom_cols"] != GEOM_COLS:
             raise RuntimeError("weight ensemble manifest does not match app/weight.py layout")
-        self.fx = FeatureExtractor(device)
+        self.fx = FeatureExtractor(device, self.man.get("backbone_files"))
+        self.heads = self.man.get("heads", ["svr", "ridge", "mlp"])
+        self.weights = self.man.get("weights") or [1 / len(self.heads)] * len(self.heads)
         self.svr = joblib.load(ENSEMBLE_DIR / "svr.joblib")
         self.ridge = joblib.load(ENSEMBLE_DIR / "ridge.joblib")
         ck = torch.load(ENSEMBLE_DIR / "mlp.pt", map_location=device, weights_only=True)
@@ -192,6 +216,8 @@ class WeightPredictor:
         self.mlp_targets = ck["targets"]
         self.mlp_mu, self.mlp_sd = np.array(ck["y_mu"]), np.array(ck["y_sd"])
         self.version = self.man["version"]
+        # Older (cattle-only) manifests have no species list.
+        self.species = self.man.get("species", ["cow"])
 
     def warmup(self) -> None:
         self.predict(Image.new("RGB", (INPUT_SIZE, INPUT_SIZE), (114, 114, 114)))
@@ -202,14 +228,22 @@ class WeightPredictor:
         im640 = to_model_input(im)
         g = self.fx.geometry(im640)
         geom = scale_geometry(np.array([[g[c] for c in GEOM_COLS]]), self.man["geom_stats"])
-        X = np.hstack([self.fx.backbone_features([im640]), geom])
+        direct = None
+        if "direct" in self.heads:
+            feats, direct = self.fx.backbone_features([im640], geom)
+        else:
+            feats = self.fx.backbone_features([im640])
+        X = np.hstack([feats, geom])
 
         p_svr = float(self.svr.predict(X)[0])
         p_ridge = float(self.ridge.predict(X)[0])
         mlp_out = self.mlp(torch.tensor(X, dtype=torch.float32))[0].numpy() \
             * self.mlp_sd + self.mlp_mu
         p_mlp = float(mlp_out[0])
-        preds = [p_svr, p_ridge, p_mlp]
+        per_model = {"svr": p_svr, "ridge": p_ridge, "mlp": p_mlp}
+        if direct is not None:
+            per_model["direct"] = float(direct[0])
+        preds = [per_model[h] for h in self.heads]
 
         # Other multi-task outputs. Only the MLP predicts these (SVR / Ridge
         # were fitted on weight alone), so each is a single-model estimate.
@@ -228,12 +262,15 @@ class WeightPredictor:
             }
 
         return {
-            "kg": round(float(np.mean(preds)), 1),
-            # how much the three heads disagree - not a confidence interval
+            "kg": round(float(np.dot(self.weights, preds)), 1),
+            # how much the heads disagree - not a confidence interval
             "spread_kg": round(float(np.std(preds)), 1),
-            "per_model": {"svr": round(p_svr, 1), "ridge": round(p_ridge, 1),
-                          "mlp": round(p_mlp, 1)},
+            "per_model": {k: round(v, 1) for k, v in per_model.items()},
+            # share of each head in `kg` (NNLS may zero some out)
+            "head_weights": {h: round(float(w), 3) for h, w in zip(self.heads, self.weights)},
             "typical_error_kg": self.man.get("typical_error_kg"),
+            "typical_error_by_species": self.man.get("typical_error_by_species"),
+            "species": self.species,
             "measurements": measurements,
             "detector_found": g["found"],
             "model_version": self.version,
